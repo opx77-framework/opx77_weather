@@ -74,7 +74,12 @@ end
 local function valid(value)
   if type(value) ~= "table" then return false end
   if value.protocol ~= OpxWeather.PROTOCOL then return false end
-  if type(value.authorityEpoch) ~= "number" or value.authorityEpoch < 0 then return false end
+  -- bounded above: without a ceiling one forged snapshot latches this client off the real
+  -- authority for the session, because every genuine one is then refused as stale
+  if type(value.authorityEpoch) ~= "number" or value.authorityEpoch < 0 or
+    value.authorityEpoch > 2 ^ 53 or value.authorityEpoch % 1 ~= 0 then
+    return false
+  end
   -- `% 1 ~= 0` does not bite past 2^53: 1e300 % 1 is exactly 0, and such a
   -- revision reaches a `%d` further down, which raises. A counter never gets
   -- near this, so an upper bound is the honest test.
@@ -86,7 +91,10 @@ local function valid(value)
     value.weatherRevision > 2 ^ 53 then
     return false
   end
-  if type(value.secondsOfDay) ~= "number" or value.secondsOfDay ~= value.secondsOfDay then
+  -- NaN is caught by the self-comparison; the bounds catch math.huge, which survives it and
+  -- poisons the clock until a `%02d` raises out of the sync handler
+  if type(value.secondsOfDay) ~= "number" or value.secondsOfDay ~= value.secondsOfDay or
+    value.secondsOfDay < 0 or value.secondsOfDay >= 86400 then
     return false
   end
   -- bounded, not merely positive: past MAX_RATE every drift correction is a world jump
