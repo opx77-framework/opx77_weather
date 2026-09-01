@@ -111,7 +111,8 @@ local function register(key, handler, floor)
   end
 
   -- two entries under one name bind one ACL key, and the loser's RESTRICTED flag with it
-  for _, existing in ipairs(registered) do
+  for index = 1, #registered do
+    local existing = registered[index]
     if existing.name == name then
       Open77.log.error(("command %s is declared twice (COMMANDS.%s and COMMANDS.%s); " ..
         "%s is NOT registered"):format(name, existing.key, key, key))
@@ -131,7 +132,9 @@ end)
 register("PRESETS", function(source, _, raw)
   if cooled(source, "presets") then return end
   local lines = { "weather presets (name / engine preset / weight / seconds):" }
-  for _, definition in ipairs(Authority.presets()) do
+  local presets = Authority.presets()
+  for index = 1, #presets do
+    local definition = presets[index]
     -- `%g` on the two the loader does not floor: `%d` on a number with no integer form raises
     lines[#lines + 1] = ("  %-12s %-26s w=%-3s %d..%ds  transition %ss"):format(
       definition.NAME, definition.PRESET, ("%g"):format(definition.WEIGHT),
@@ -205,16 +208,18 @@ RegisterNetEvent("chat:ready", function()
   if cooled(player, "chat_suggestions") then return end
 
   local suggestions = {}
-  for _, command in ipairs(registered) do
+  for index = 1, #registered do
+    local command = registered[index]
     local help = HELP[command.key] or { text = "", params = {} }
-    suggestions[#suggestions + 1] =
+    suggestions[index] =
       { command = "/" .. command.name, help = help.text, parameters = help.params }
   end
   TriggerClientEvent("chat:addSuggestions", player, suggestions)
 end)
 
 local names = {}
-for _, command in ipairs(registered) do
-  names[#names + 1] = command.name .. (command.restricted and " [acl]" or " [open]")
+for index = 1, #registered do
+  local command = registered[index]
+  names[index] = command.name .. (command.restricted and " [acl]" or " [open]")
 end
 Open77.log.info(("commands: %s"):format(#names > 0 and table.concat(names, ", ") or "none"))

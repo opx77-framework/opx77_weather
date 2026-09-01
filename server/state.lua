@@ -27,7 +27,9 @@ local function number(value, fallback)
   return value
 end
 
-for position, row in ipairs(Config.WEATHER or {}) do
+local configured = Config.WEATHER
+for position = 1, type(configured) == "table" and #configured or 0 do
+  local row = configured[position]
   local name = type(row.NAME) == "string" and row.NAME or nil
   local preset = type(row.PRESET) == "string" and row.PRESET or nil
   if name == nil or preset == nil then
@@ -116,7 +118,10 @@ local function saveState()
     weatherFrozen = state.weatherFrozen,
     weather = state.weather,
   }
-  for _, field in ipairs(CARRIED_NUMBERS) do carried[field] = state[field] end
+  for index = 1, #CARRIED_NUMBERS do
+    local field = CARRIED_NUMBERS[index]
+    carried[field] = state[field]
+  end
   Open77.state.save(carried)
 end
 
@@ -139,7 +144,8 @@ local function restoreState()
     return false
   end
 
-  for _, field in ipairs(CARRIED_NUMBERS) do
+  for index = 1, #CARRIED_NUMBERS do
+    local field = CARRIED_NUMBERS[index]
     local value = carried[field]
     -- `value ~= value` is the NaN test: a NaN anchor freezes the clock silently
     if type(value) ~= "number" or value ~= value then
@@ -152,7 +158,10 @@ local function restoreState()
   -- same ceiling as the wire: a bag outlives the build whose bound was wider
   if carried.rate <= 0 or carried.rate > Clock.MAX_RATE then return false end
 
-  for _, field in ipairs(CARRIED_NUMBERS) do state[field] = carried[field] end
+  for index = 1, #CARRIED_NUMBERS do
+    local field = CARRIED_NUMBERS[index]
+    state[field] = carried[field]
+  end
   state.baseSeconds = Clock.normalize(state.baseSeconds)
   state.weather = weather.NAME
   state.timeFrozen = carried.timeFrozen == true
@@ -343,11 +352,13 @@ end
 ---@param roll number|nil  0..1, so a test can name a band; live callers pass nothing
 ---@return table|nil definition
 function Authority.chooseNext(roll)
-  local candidates, total = {}, 0
-  for _, definition in ipairs(order) do
+  local candidates, total, count = {}, 0, 0
+  for index = 1, #order do
+    local definition = order[index]
     if definition.NAME ~= state.weather and definition.WEIGHT > 0 then
       total = total + definition.WEIGHT
-      candidates[#candidates + 1] = { definition = definition, ceiling = total }
+      count = count + 1
+      candidates[count] = { definition = definition, ceiling = total }
     end
   end
   -- nothing left to roll and the last preset already showing: staying put is the answer
@@ -356,7 +367,8 @@ function Authority.chooseNext(roll)
   roll = tonumber(roll)
   if roll == nil or roll ~= roll or roll < 0 or roll >= 1 then roll = math.random() end
   local point = roll * total
-  for _, candidate in ipairs(candidates) do
+  for index = 1, count do
+    local candidate = candidates[index]
     if point < candidate.ceiling then return candidate.definition end
   end
   -- floating-point tail: `point` landed exactly on the last ceiling
