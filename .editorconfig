@@ -14,9 +14,8 @@ max_line_length = 100
 [*.md]
 trim_trailing_whitespace = false
 
-# acl.jsonc and server.jsonc are edited beside this resource, never in it.
 [*.{json,jsonc}]
 indent_size = 2
 
-[*.sh]
+[*.{html,css,js}]
 indent_size = 2

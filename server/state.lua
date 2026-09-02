@@ -14,7 +14,8 @@ local EVENT_SYNC = "opx77:weather:sync"
 --- Raised for another file in THIS resource; TriggerEvent is per-VM on the server.
 local EVENT_STATE = "opx77:weather:state"
 
---- `Open77.time.monotonic()` answers SECONDS on both sides, whatever the API reference says.
+--- `Open77.time.monotonic()` answers SECONDS on both sides, exactly as the API reference says;
+--- the server binary divides its millisecond scheduler clock by 1000 before handing it over.
 local function nowMs()
   return math.floor(Open77.time.monotonic() * 1000)
 end

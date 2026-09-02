@@ -34,13 +34,14 @@ RegisterNetEvent(EVENT_REQUEST, function(requestId)
   Authority.publish("request", player, requestId)
 end)
 
+--- The one departure event this platform raises, and the only thing keeping `lastRequestMs`
+--- from growing for the life of the process. There used to be a second handler on
+--- `playerDropped` here, on the assumption that the host raises both: it does not. The name
+--- occurs in the shipped server binary only inside the platform's own embedded Lua bootstrap,
+--- which registers a handler for it that nothing ever fires; no assembly emits it. A second
+--- handler would therefore have been dead code that made this cleanup look doubly covered.
 AddEventHandler("onPlayerDisconnected", function(playerId)
   lastRequestMs[tonumber(playerId) or 0] = nil
-end)
-
---- The platform raises two disconnection events and documents neither; the core takes both.
-AddEventHandler("playerDropped", function()
-  lastRequestMs[tonumber(source) or 0] = nil
 end)
 
 CreateThread(function()
@@ -67,3 +68,18 @@ else
     "restart returns it to configuration"):format(
     hour, minute, second, Authority.state.weather))
 end
+
+--- Warns once if the official package this one replaces is also running. `GetResourceState`
+--- is the only way to ask: server resources cannot call each other. Deferred to a thread
+--- rather than run at file scope, because at load time a conflicting resource listed after
+--- this one in `resources.load` is still `discovered` and the warning would silently not
+--- fire -- which would make it depend on load order, the one thing an operator did not
+--- choose. The host answers lowercase; `:lower()` costs nothing and survives it changing.
+CreateThread(function()
+  local official = tostring(GetResourceState("open77_weather") or ""):lower()
+  if official ~= "running" and official ~= "starting" then return end
+  Open77.log.warn("open77_weather is running and is the package this one replaces")
+  Open77.log.warn("  two authorities both hold world.environment: the clock is corrected twice")
+  Open77.log.warn("  a second toward two different times, and the sky is whichever authority")
+  Open77.log.warn("  rolled last. Drop one from resources.load in server.jsonc.")
+end)
