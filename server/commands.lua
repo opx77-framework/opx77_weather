@@ -114,7 +114,10 @@ end
 ---@return integer
 local function count(args)
   if type(args) ~= "table" then return 0 end
-  return tonumber(args.n) or #args
+  local given = tonumber(args.n)
+  -- a NaN `n` sits inside every range test below, so `#args` answers instead
+  if not OpxWeather.Clock.finite(given) or given < 0 or given % 1 ~= 0 then return #args end
+  return given
 end
 
 --- `on` / `off` and their synonyms; nil for anything else.
@@ -144,6 +147,7 @@ local function cooled(source, key)
   return false
 end
 
+-- the only departure event this platform raises
 AddEventHandler("onPlayerDisconnected", function(playerId)
   local player = tonumber(playerId) or 0
   for slot in pairs(lastCommandMs) do

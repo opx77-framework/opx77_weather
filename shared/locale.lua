@@ -1,5 +1,5 @@
---- Player-facing text. Server logs stay in English whatever the configured locale is.
---- Publishes the global `locale(key, params)` as well as `OpxWeather.Locale`.
+--- Player-facing text. Log lines and console output stay in English whatever the
+--- configured locale is. Publishes the global `locale(key, params)` and `OpxWeather.Locale`.
 
 OpxWeather = OpxWeather or {}
 
@@ -9,7 +9,7 @@ local FALLBACK = "en"
 
 local Locale = {}
 
---- Replaces `{name}` with `params.name`; a name with no parameter is left as it was written.
+--- Fills `{name}` from `params`; a placeholder with no value is left as it was written.
 ---@param text string
 ---@param params? table<string, string|number>
 ---@return string
@@ -69,7 +69,7 @@ end
 
 OpxWeather.Locale = Locale
 
---- The shorthand every gameplay file uses.
+--- The shorthand every file below the catalogues uses.
 ---@type fun(key: string, params?: table<string, string|number>): string
 locale = Locale.t
 

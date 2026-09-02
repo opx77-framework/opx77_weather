@@ -79,15 +79,14 @@
 ---@field rate number|nil
 
 --- What `Authority.status()` answers: everything a status line needs, already resolved.
+--- Rendered by `Authority.statusText()` and by `statusLine()` in server/commands.lua.
 ---@class WeatherStatus : WeatherResult
 ---@field hour integer
 ---@field minute integer
 ---@field second integer
 ---@field dayLengthMinutes number
----@field rate number
 ---@field timeFrozen boolean
 ---@field weather string
----@field preset string
 ---@field weatherFrozen boolean
 ---@field nextRollInSeconds integer|nil  absent while the schedule is frozen
 ---@field revision integer

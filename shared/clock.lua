@@ -1,4 +1,5 @@
---- Clock arithmetic: pure functions over numbers, so both halves run the same code.
+--- The shared surface: the wire constants, clock arithmetic and the loop guard, so both
+--- halves run the same code.
 
 OpxWeather = OpxWeather or {}
 
@@ -19,6 +20,21 @@ OpxWeather.SYNC = {
 OpxWeather.INITIAL_WEATHER_SECONDS = 180
 OpxWeather.WEATHER_PRIORITY = 5
 
+--- The longest crossfade either half accepts, so a configured row cannot be refused on the wire.
+OpxWeather.MAX_TRANSITION_SECONDS = 300
+
+--- Run one loop slice. A raise from a host call in a bare `CreateThread` ends that loop for
+--- the session, so every slice in this resource runs inside this.
+---@param label string  what the log calls the loop
+---@param fn fun(...)
+---@param ... any  passed on to `fn`
+function OpxWeather.guarded(label, fn, ...)
+  local ok, failure = pcall(fn, ...)
+  if not ok then
+    Open77.log.warn(("%s slice failed: %s"):format(label, tostring(failure)))
+  end
+end
+
 
 local Clock = {}
 OpxWeather.Clock = Clock
@@ -26,11 +42,24 @@ OpxWeather.Clock = Clock
 local DAY_SECONDS = 24 * 60 * 60
 Clock.DAY_SECONDS = DAY_SECONDS
 
+--- The widest magnitude a carried or wire number may hold: past it `%d` has no integer form.
+Clock.MAX_MAGNITUDE = 2 ^ 53
+
+--- True for a real number within `Clock.MAX_MAGNITUDE`. NaN and an infinity are both false.
+---@param value any
+---@return boolean
+function Clock.finite(value)
+  return type(value) == "number" and value == value
+    and value >= -Clock.MAX_MAGNITUDE and value <= Clock.MAX_MAGNITUDE
+end
+
 --- Fold any second-of-day onto 0..86399, negatives included.
 ---@param seconds any
 ---@return number
 function Clock.normalize(seconds)
-  seconds = tonumber(seconds) or 0
+  seconds = tonumber(seconds)
+  -- NaN and an infinity both fold to NaN, which raises the moment a `%d` reaches it
+  if not Clock.finite(seconds) then return 0 end
   return ((seconds % DAY_SECONDS) + DAY_SECONDS) % DAY_SECONDS
 end
 
@@ -94,7 +123,7 @@ Clock.MAX_RATE = 120.0
 ---@return number|nil, string|nil  -- nil, "invalid_day_length"|"day_too_short"
 function Clock.rateFromDayLength(minutes)
   minutes = tonumber(minutes)
-  if minutes == nil or minutes ~= minutes then return nil, "invalid_day_length" end
+  if not Clock.finite(minutes) then return nil, "invalid_day_length" end
   if minutes < 1 or minutes > 10080 then return nil, "invalid_day_length" end
   local rate = DAY_SECONDS / (minutes * 60)
   -- bounded: past MAX_RATE a client corrects for drift continuously and the world jumps

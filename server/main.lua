@@ -21,9 +21,7 @@ RegisterNetEvent(EVENT_REQUEST, function(requestId)
   if player <= 0 then return end
 
   requestId = tonumber(requestId)
-  if requestId == nil or requestId ~= requestId or requestId < 1 or requestId % 1 ~= 0 then
-    return
-  end
+  if not Clock.finite(requestId) or requestId < 1 or requestId % 1 ~= 0 then return end
 
   local atMs = nowMs()
   local previous = lastRequestMs[player]
@@ -33,24 +31,37 @@ RegisterNetEvent(EVENT_REQUEST, function(requestId)
   Authority.publish("request", player, requestId)
 end)
 
---- The only departure event the host raises, so the only place `lastRequestMs` is pruned.
+-- the only departure event this platform raises
 AddEventHandler("onPlayerDisconnected", function(playerId)
   lastRequestMs[tonumber(playerId) or 0] = nil
 end)
 
-CreateThread(function()
-  -- seeded on the first slice: at file scope the monotonic clock still reads zero
-  math.randomseed(math.floor(Open77.time.monotonic() * 1000000) % 2147483647)
+local guarded = OpxWeather.guarded
 
-  local nextHeartbeatMs = nowMs() + (SYNC.HEARTBEAT_MS or 5000)
+--- When the next heartbeat is due, whether or not a roll published in the meantime.
+local nextHeartbeatMs = 0
+
+--- Seeded on the first slice: at file scope the monotonic clock still reads zero.
+local function seed()
+  math.randomseed(math.floor(Open77.time.monotonic() * 1000000) % 2147483647)
+  nextHeartbeatMs = nowMs() + (SYNC.HEARTBEAT_MS or 5000)
+end
+
+--- Roll if one is due, and republish on the heartbeat if nothing else did.
+local function schedule()
+  local atMs = nowMs()
+  local published = Authority.tick(atMs)
+  if atMs >= nextHeartbeatMs then
+    if not published then Authority.publish("heartbeat") end
+    nextHeartbeatMs = atMs + (SYNC.HEARTBEAT_MS or 5000)
+  end
+end
+
+CreateThread(function()
+  guarded("seed", seed)
   while true do
     Wait(SYNC.SCHEDULER_MS or 1000)
-    local atMs = nowMs()
-    local published = Authority.tick(atMs)
-    if atMs >= nextHeartbeatMs then
-      if not published then Authority.publish("heartbeat") end
-      nextHeartbeatMs = atMs + (SYNC.HEARTBEAT_MS or 5000)
-    end
+    guarded("schedule", schedule)
   end
 end)
 
@@ -64,9 +75,10 @@ else
 end
 
 --- Warns once if the package this one replaces is running too. In a thread, not at file
---- scope: a resource loaded after this one still reads `discovered` at that point.
+--- scope: a resource that starts after this one is not running yet when this file loads.
 CreateThread(function()
-  local official = tostring(GetResourceState("open77_weather") or ""):lower()
+  local read, official = pcall(GetResourceState, "open77_weather")
+  official = read and tostring(official or ""):lower() or ""
   if official ~= "running" and official ~= "starting" then return end
   Open77.log.warn("open77_weather is running and is the package this one replaces")
   Open77.log.warn("  two authorities both hold world.environment: the clock is corrected twice")

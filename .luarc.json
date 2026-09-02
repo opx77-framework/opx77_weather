@@ -16,15 +16,15 @@
     "AddEventHandler",
     "TriggerEvent",
     "RegisterNetEvent",
-    "RegisterCommand",
-    "TriggerClientEvent",
     "TriggerServerEvent",
+    "TriggerClientEvent",
+    "RegisterCommand",
     "GetCurrentResourceName",
     "GetResourceState",
     "GetInvokingResource",
     "GetInvokingResourceGeneration",
-    "exports",
     "source",
+    "exports",
     "print"
   ],
   "diagnostics.disable": [

@@ -29,7 +29,7 @@ OPX_WEATHER_CONFIG = {
   },
 
   COMMANDS = { -- RESTRICTED gates on command.<NAME> in acl.jsonc; NAME = false registers none
-    STATUS = { NAME = "opx77.weather", RESTRICTED = false }, -- time, preset, freezes, roll
+    STATUS = { NAME = "opx77.weather", RESTRICTED = false }, -- time, weather, freezes, roll
     PRESETS = { NAME = "opx77.weather.presets", RESTRICTED = false }, -- what .set accepts
     SET = { NAME = "opx77.weather.set", RESTRICTED = true }, -- <name|preset> [seconds]
     NEXT = { NAME = "opx77.weather.next", RESTRICTED = true }, -- roll now, even if frozen

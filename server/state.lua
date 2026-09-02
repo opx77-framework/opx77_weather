@@ -21,9 +21,13 @@ end
 
 local order, index = {}, {}
 
+--- A configured number, or the fallback for anything a `%d` or math.random cannot take.
+---@param value any
+---@param fallback number
+---@return number
 local function number(value, fallback)
   value = tonumber(value)
-  if value == nil or value ~= value then return fallback end
+  if not Clock.finite(value) then return fallback end
   return value
 end
 
@@ -44,7 +48,9 @@ for position = 1, type(configured) == "table" and #configured or 0 do
       WEIGHT = math.max(0, number(row.WEIGHT, 0)),
       MIN_SECONDS = minimum,
       MAX_SECONDS = maximum,
-      TRANSITION_SECONDS = math.max(0, number(row.TRANSITION_SECONDS, 20)),
+      -- clamped to the bound a client validates against: past it every snapshot is refused
+      TRANSITION_SECONDS = math.min(OpxWeather.MAX_TRANSITION_SECONDS,
+        math.max(0, number(row.TRANSITION_SECONDS, 20))),
     }
     order[#order + 1] = definition
     index[name:lower()] = definition
@@ -151,23 +157,24 @@ local function restoreState()
 
   for index = 1, #CARRIED_NUMBERS do
     local field = CARRIED_NUMBERS[index]
-    local value = carried[field]
-    -- same ceiling as the wire: NaN, an infinity and 1e300 all reach a `%d`, which raises
-    if type(value) ~= "number" or value ~= value
-      or value < -(2 ^ 53) or value > 2 ^ 53 then
+    if not Clock.finite(carried[field]) then
       Open77.log.warn(("carried state ignored: field '%s' is not a finite number")
         :format(field))
       return false
     end
   end
-  if type(carried.authorityEpoch) ~= "number" or carried.authorityEpoch < 0
-    or carried.authorityEpoch > 2 ^ 53 or carried.authorityEpoch % 1 ~= 0 then
+  if not Clock.finite(carried.authorityEpoch) or carried.authorityEpoch < 0
+    or carried.authorityEpoch % 1 ~= 0 then
     return false
   end
   if carried.revision < 1 or carried.weatherRevision < 1 then return false end
   if carried.revision % 1 ~= 0 or carried.weatherRevision % 1 ~= 0 then return false end
-  -- same ceiling as the wire: carried state can outlive a build with a wider bound
+  -- the wire's own bounds: carried state can outlive a build that held wider ones
   if carried.rate <= 0 or carried.rate > Clock.MAX_RATE then return false end
+  if carried.transitionSeconds < 0
+    or carried.transitionSeconds > OpxWeather.MAX_TRANSITION_SECONDS then
+    return false
+  end
 
   for index = 1, #CARRIED_NUMBERS do
     local field = CARRIED_NUMBERS[index]
@@ -298,7 +305,7 @@ function Authority.setDayLength(minutes, reason)
   rebase(nowMs())
   state.rate = rate
   commit(reason or "day_length_changed")
-  return { ok = true, minutes = tonumber(minutes), rate = rate }
+  return { ok = true, minutes = Clock.DAY_SECONDS / rate / 60, rate = rate }
 end
 
 --- Draw this preset's next duration, at the moment it starts.
@@ -319,10 +326,10 @@ function Authority.setWeather(value, transitionSeconds, reason)
   local transition = definition.TRANSITION_SECONDS
   if transitionSeconds ~= nil then
     transition = tonumber(transitionSeconds)
-    if transition == nil or transition ~= transition then
+    if not Clock.finite(transition) then
       return { ok = false, error = "invalid_transition" }
     end
-    if transition < 0 or transition > 300 then
+    if transition < 0 or transition > OpxWeather.MAX_TRANSITION_SECONDS then
       return { ok = false, error = "invalid_transition" }
     end
   end
@@ -376,7 +383,7 @@ function Authority.chooseNext(roll)
   if total <= 0 then return Authority.preset(state.weather) end
 
   roll = tonumber(roll)
-  if roll == nil or roll ~= roll or roll < 0 or roll >= 1 then roll = math.random() end
+  if not Clock.finite(roll) or roll < 0 or roll >= 1 then roll = math.random() end
   local point = roll * total
   for index = 1, count do
     local candidate = candidates[index]
@@ -407,21 +414,19 @@ function Authority.tick(atMs)
   return Authority.roll("weather_scheduled").ok == true
 end
 
---- Everything a status line needs, resolved in one place.
+--- Everything a status line needs, resolved in one place. Rendered by `statusText()` below
+--- and by `statusLine()` in server/commands.lua: a new field must be added to both.
 ---@return WeatherStatus
 function Authority.status()
   local hour, minute, second = Clock.toHms(Authority.secondsNow())
-  local definition = Authority.preset(state.weather)
   return {
     ok = true,
     hour = hour,
     minute = minute,
     second = second,
     dayLengthMinutes = Clock.DAY_SECONDS / state.rate / 60,
-    rate = state.rate,
     timeFrozen = state.timeFrozen,
     weather = state.weather,
-    preset = definition and definition.PRESET or "",
     weatherFrozen = state.weatherFrozen,
     nextRollInSeconds = state.weatherFrozen and nil
       or math.max(0, math.floor((state.nextRollAtMs - nowMs()) / 1000)),
@@ -434,7 +439,7 @@ end
 ---@return string
 function Authority.statusText()
   local status = Authority.status()
-  return ("weather: %02d:%02d:%02d  day=%dmin%s  preset=%s%s  rev=%d%s"):format(
+  return ("weather: %02d:%02d:%02d  day=%dmin%s  weather=%s%s  rev=%d%s"):format(
     status.hour, status.minute, status.second,
     math.floor(status.dayLengthMinutes + 0.5),
     status.timeFrozen and " (clock held)" or "",

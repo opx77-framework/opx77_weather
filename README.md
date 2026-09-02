@@ -53,6 +53,9 @@ Names are yours to change in `config.lua`; a command set to `false` is not regis
 entries sharing one name would share one ACL key, so the second is refused and logged. Open
 commands are rate-limited to one run every two seconds per player; the console is not limited.
 
+The client also mirrors this resource's own command answers into the operator log, in English.
+It recognises them by the names in `config.lua`, so a rename carries.
+
 ## Exports
 
 | Export | Answers |
@@ -73,7 +76,8 @@ names and their ACL flags, and the locale.
 - `WEATHER_FROZEN` — holds this resource's roll schedule, not the engine's own weather lock,
   which this resource keeps on for as long as it runs.
 - `WEATHER` — a row with `WEIGHT = 0` is never rolled but can still be set by hand, and a row
-  missing `NAME` or `PRESET` is dropped with a warning at boot.
+  missing `NAME` or `PRESET` is dropped with a warning at boot. `TRANSITION_SECONDS` is clamped
+  to 300, the longest crossfade a client accepts.
 - A reload keeps the live time and sky; a full restart returns both to this file.
 
 ## Locales
