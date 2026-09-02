@@ -14,8 +14,7 @@ local EVENT_SYNC = "opx77:weather:sync"
 --- Raised for another file in THIS resource; TriggerEvent is per-VM on the server.
 local EVENT_STATE = "opx77:weather:state"
 
---- `Open77.time.monotonic()` answers SECONDS on both sides, exactly as the API reference says;
---- the server binary divides its millisecond scheduler clock by 1000 before handing it over.
+--- `Open77.time.monotonic()` answers seconds on both sides.
 local function nowMs()
   return math.floor(Open77.time.monotonic() * 1000)
 end
@@ -53,7 +52,7 @@ for position = 1, type(configured) == "table" and #configured or 0 do
   end
 end
 
---- Whether the authority has anything to work with. False disables every mutation.
+--- Whether the authority has a preset table. False refuses every WEATHER mutation.
 Authority.ready = #order > 0
 
 --- Resolve a NAME or an engine PRESET to its row, without case.
@@ -74,7 +73,12 @@ local bootSeconds = Clock.fromHms(
   (Config.START_TIME or {}).HOUR, (Config.START_TIME or {}).MINUTE,
   (Config.START_TIME or {}).SECOND) or Clock.fromHms(12, 0, 0)
 
-local bootRate = Clock.rateFromDayLength(Config.DAY_LENGTH_MINUTES) or 8.0
+local bootRate, rateFailure = Clock.rateFromDayLength(Config.DAY_LENGTH_MINUTES)
+if bootRate == nil then
+  bootRate = 8.0
+  Open77.log.warn(("DAY_LENGTH_MINUTES '%s' refused (%s); starting on 180")
+    :format(tostring(Config.DAY_LENGTH_MINUTES), tostring(rateFailure)))
+end
 
 local bootWeather = Authority.preset(Config.INITIAL_WEATHER) or order[1]
 if Authority.ready and Authority.preset(Config.INITIAL_WEATHER) == nil then
@@ -126,7 +130,7 @@ local function saveState()
   Open77.state.save(carried)
 end
 
---- Adopt the previous generation's snapshot, or refuse it whole -- it is untrusted input.
+--- Adopt the previous generation's carried state, or refuse it whole. Untrusted input.
 ---@return boolean adopted
 local function restoreState()
   local carried = Open77.state.load()
@@ -148,15 +152,21 @@ local function restoreState()
   for index = 1, #CARRIED_NUMBERS do
     local field = CARRIED_NUMBERS[index]
     local value = carried[field]
-    -- `value ~= value` is the NaN test: a NaN anchor freezes the clock silently
-    if type(value) ~= "number" or value ~= value then
-      Open77.log.warn(("carried state ignored: field '%s' is not a number"):format(field))
+    -- same ceiling as the wire: NaN, an infinity and 1e300 all reach a `%d`, which raises
+    if type(value) ~= "number" or value ~= value
+      or value < -(2 ^ 53) or value > 2 ^ 53 then
+      Open77.log.warn(("carried state ignored: field '%s' is not a finite number")
+        :format(field))
       return false
     end
   end
-  if type(carried.authorityEpoch) ~= "number" or carried.authorityEpoch < 0 then return false end
+  if type(carried.authorityEpoch) ~= "number" or carried.authorityEpoch < 0
+    or carried.authorityEpoch > 2 ^ 53 or carried.authorityEpoch % 1 ~= 0 then
+    return false
+  end
   if carried.revision < 1 or carried.weatherRevision < 1 then return false end
-  -- same ceiling as the wire: a bag outlives the build whose bound was wider
+  if carried.revision % 1 ~= 0 or carried.weatherRevision % 1 ~= 0 then return false end
+  -- same ceiling as the wire: carried state can outlive a build with a wider bound
   if carried.rate <= 0 or carried.rate > Clock.MAX_RATE then return false end
 
   for index = 1, #CARRIED_NUMBERS do
@@ -419,7 +429,8 @@ function Authority.status()
   }
 end
 
---- One line of it, for a console and for a chat answer. The boot banner prints it too.
+--- One line of it for the operator: the console answer and the boot banner. Stays
+--- English; a player reads the catalogue line composed in server/commands.lua.
 ---@return string
 function Authority.statusText()
   local status = Authority.status()

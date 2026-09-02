@@ -2,7 +2,6 @@
 
 OpxWeather = OpxWeather or {}
 
-local Config = OPX_WEATHER_CONFIG
 local Clock = OpxWeather.Clock
 
 local Projection = {}
@@ -20,9 +19,14 @@ Projection.state = nil
 local lastApplyMs
 
 -- load nothing else: every function below would be a call into nil
-if type(Open77.environment) ~= "table"
-  or type(Open77.environment.setWeather) ~= "function"
-  or type(Open77.environment.setTime) ~= "function" then
+local NATIVES = { "setWeather", "setTime", "getTime", "setWeatherFrozen", "isWeatherFrozen",
+  "setTimeFrozen" }
+local installed = type(Open77.environment) == "table"
+for index = 1, installed and #NATIVES or 0 do
+  installed = type(Open77.environment[NATIVES[index]]) == "function"
+  if not installed then break end
+end
+if not installed then
   Open77.log.warn("environment natives unavailable; restart Cyberpunk to activate them")
   return
 end
@@ -74,25 +78,22 @@ end
 local function valid(value)
   if type(value) ~= "table" then return false end
   if value.protocol ~= OpxWeather.PROTOCOL then return false end
-  -- bounded above: without a ceiling one forged snapshot latches this client off the real
-  -- authority for the session, because every genuine one is then refused as stale
+  -- bounded above: an unbounded forged epoch would make every genuine snapshot look stale
   if type(value.authorityEpoch) ~= "number" or value.authorityEpoch < 0 or
     value.authorityEpoch > 2 ^ 53 or value.authorityEpoch % 1 ~= 0 then
     return false
   end
-  -- `% 1 ~= 0` does not bite past 2^53: 1e300 % 1 is exactly 0, and such a
-  -- revision reaches a `%d` further down, which raises. A counter never gets
-  -- near this, so an upper bound is the honest test.
+  -- upper-bounded because `% 1 ~= 0` cannot detect a non-integer past 2^53
   if type(value.revision) ~= "number" or value.revision < 1 or
     value.revision > 2 ^ 53 or value.revision % 1 ~= 0 then
     return false
   end
+  -- `% 1 ~= 0` is the NaN test as well here: NaN sits inside every bound above and below
   if type(value.weatherRevision) ~= "number" or value.weatherRevision < 1 or
-    value.weatherRevision > 2 ^ 53 then
+    value.weatherRevision > 2 ^ 53 or value.weatherRevision % 1 ~= 0 then
     return false
   end
-  -- NaN is caught by the self-comparison; the bounds catch math.huge, which survives it and
-  -- poisons the clock until a `%02d` raises out of the sync handler
+  -- the self-comparison catches NaN; the bounds catch math.huge, which survives it
   if type(value.secondsOfDay) ~= "number" or value.secondsOfDay ~= value.secondsOfDay or
     value.secondsOfDay < 0 or value.secondsOfDay >= 86400 then
     return false
@@ -101,17 +102,30 @@ local function valid(value)
   if type(value.rate) ~= "number" or value.rate ~= value.rate then return false end
   if value.rate <= 0 or value.rate > Clock.MAX_RATE then return false end
   if type(value.timeFrozen) ~= "boolean" then return false end
+  if type(value.weatherFrozen) ~= "boolean" then return false end
+  if type(value.weather) ~= "string" or value.weather == "" then return false end
   if type(value.weatherPreset) ~= "string" or value.weatherPreset == "" then return false end
-  if type(value.weatherPriority) ~= "number" or value.weatherPriority < 0 then return false end
-  if type(value.transitionSeconds) ~= "number" or value.transitionSeconds < 0
-    or value.transitionSeconds > 300 then
+  if type(value.weatherPriority) ~= "number" or value.weatherPriority < 0
+    or value.weatherPriority % 1 ~= 0 then
+    return false
+  end
+  if type(value.transitionSeconds) ~= "number"
+    or value.transitionSeconds ~= value.transitionSeconds
+    or value.transitionSeconds < 0 or value.transitionSeconds > 300 then
     return false
   end
   if type(value.weatherTransitionRemainingMs) ~= "number"
+    or value.weatherTransitionRemainingMs ~= value.weatherTransitionRemainingMs
     or value.weatherTransitionRemainingMs < 0
     or value.weatherTransitionRemainingMs > 300000 then
     return false
   end
+  -- nil is the answer rather than a missing field: it is absent while the schedule is frozen
+  if value.nextRollInMs ~= nil and (type(value.nextRollInMs) ~= "number"
+    or value.nextRollInMs ~= value.nextRollInMs or value.nextRollInMs < 0) then
+    return false
+  end
+  if type(value.reason) ~= "string" then return false end
   return true
 end
 
@@ -236,7 +250,7 @@ function Projection.apply(value, requestId)
     weather = value.weather,
     weatherPreset = value.weatherPreset,
     weatherPriority = value.weatherPriority,
-    weatherFrozen = value.weatherFrozen == true,
+    weatherFrozen = value.weatherFrozen,
     transitionSeconds = value.transitionSeconds,
     weatherTransitionEndLocalMs = receivedAt + transitionRemainingMs,
     nextRollInMs = value.nextRollInMs,
@@ -266,16 +280,10 @@ function Projection.apply(value, requestId)
   return { ok = true }
 end
 
---- The authority's snapshot.
----
---- The client runtime has a cross-resource event bus, so any resource on the
---- player's machine can raise this name. It cannot forge the weather for anyone
---- else -- the server tells every client directly -- but it CAN latch this one
---- off the real authority by claiming a higher epoch, after which the genuine
---- snapshots are refused as stale. Floored so a forgery has to win a race
---- against the server's own message rather than run in a loop nobody outruns.
+--- The authority's snapshot. Any client-side resource can raise this name, so the floor
+--- below keeps a forged snapshot from latching this client off the real authority.
 RegisterNetEvent(EVENT_SYNC, function(value, requestId)
-  local atMs = math.floor(Open77.time.monotonic() * 1000)
+  local atMs = nowMs()
   if lastApplyMs ~= nil and atMs - lastApplyMs < 100 then return end
   lastApplyMs = atMs
   Projection.apply(value, requestId)
@@ -321,7 +329,7 @@ CreateThread(function()
   while not stopped do
     Wait(SYNC.ENFORCE_MS or 5000)
     if Projection.state ~= nil then
-      -- a lock gone false is evidence something took the sky; re-submitting blind costs props
+      -- a lock gone false means something else took the sky
       local frozen = Open77.environment.isWeatherFrozen()
       if frozen ~= true then
         local ok, reason = Open77.environment.setWeatherFrozen(true)

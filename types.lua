@@ -34,7 +34,7 @@
 
 --- What the authority broadcasts, and the only thing a client acts on.
 ---@class WeatherSnapshot
----@field protocol integer            must equal OPX_WEATHER_CONFIG.PROTOCOL
+---@field protocol integer            must equal OpxWeather.PROTOCOL
 ---@field authorityEpoch number       which server incarnation; a new one wins outright
 ---@field revision integer            bumped by every mutation
 ---@field weatherRevision integer     bumped only when the preset changes

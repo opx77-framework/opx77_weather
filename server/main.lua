@@ -1,10 +1,9 @@
 --- The wiring: the one inbound event, the scheduler loop, and the boot banner.
 
-local Config = OPX_WEATHER_CONFIG
 local Authority = OpxWeather.Authority
 local Clock = OpxWeather.Clock
 
---- Client to server, and the only inbound event: there is deliberately no mutation event.
+--- The only inbound event; clients can ask for a snapshot but never mutate.
 local EVENT_REQUEST = "opx77:weather:request"
 
 local SYNC = OpxWeather.SYNC
@@ -34,12 +33,7 @@ RegisterNetEvent(EVENT_REQUEST, function(requestId)
   Authority.publish("request", player, requestId)
 end)
 
---- The one departure event this platform raises, and the only thing keeping `lastRequestMs`
---- from growing for the life of the process. There used to be a second handler on
---- `playerDropped` here, on the assumption that the host raises both: it does not. The name
---- occurs in the shipped server binary only inside the platform's own embedded Lua bootstrap,
---- which registers a handler for it that nothing ever fires; no assembly emits it. A second
---- handler would therefore have been dead code that made this cleanup look doubly covered.
+--- The only departure event the host raises, so the only place `lastRequestMs` is pruned.
 AddEventHandler("onPlayerDisconnected", function(playerId)
   lastRequestMs[tonumber(playerId) or 0] = nil
 end)
@@ -69,12 +63,8 @@ else
     hour, minute, second, Authority.state.weather))
 end
 
---- Warns once if the official package this one replaces is also running. `GetResourceState`
---- is the only way to ask: server resources cannot call each other. Deferred to a thread
---- rather than run at file scope, because at load time a conflicting resource listed after
---- this one in `resources.load` is still `discovered` and the warning would silently not
---- fire -- which would make it depend on load order, the one thing an operator did not
---- choose. The host answers lowercase; `:lower()` costs nothing and survives it changing.
+--- Warns once if the package this one replaces is running too. In a thread, not at file
+--- scope: a resource loaded after this one still reads `discovered` at that point.
 CreateThread(function()
   local official = tostring(GetResourceState("open77_weather") or ""):lower()
   if official ~= "running" and official ~= "starting" then return end

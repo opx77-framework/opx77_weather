@@ -2,9 +2,7 @@
 
 OpxWeather = OpxWeather or {}
 
---- Wire and cadence. None of these is an operator decision: PROTOCOL is a wire version that
---- both halves must agree on, and the rest is how often each side talks. They live here so
---- the two halves cannot disagree about them.
+--- Wire version and cadence, shared so the two halves cannot disagree. Not operator dials.
 OpxWeather.PROTOCOL = 1
 OpxWeather.SYNC = {
   HEARTBEAT_MS = 5000, -- how often the authority republishes even when nothing changed
@@ -17,8 +15,7 @@ OpxWeather.SYNC = {
   MIN_REQUEST_MS = 1000, -- floor between two sync requests from the same player
 }
 
---- How long the boot preset holds before the first roll, and the priority setWeather is
---- submitted at. Implementation detail of the projection, not a dial.
+--- How long the boot preset holds before the first roll, and the priority setWeather uses.
 OpxWeather.INITIAL_WEATHER_SECONDS = 180
 OpxWeather.WEATHER_PRIORITY = 5
 
@@ -37,7 +34,7 @@ function Clock.normalize(seconds)
   return ((seconds % DAY_SECONDS) + DAY_SECONDS) % DAY_SECONDS
 end
 
---- Whole seconds since midnight, or nil for a time that does not exist. 25:00 is a mistake.
+--- Whole seconds since midnight, or nil for a time that does not exist.
 ---@param hour any
 ---@param minute any
 ---@param second any|nil
@@ -59,7 +56,7 @@ function Clock.toHms(seconds)
   return math.floor(whole / 3600), math.floor((whole % 3600) / 60), whole % 60
 end
 
---- "HH:MM" or "HH:MM:SS" from a command line; the pattern refuses a prefix like `12:30pm`.
+--- Parse "HH:MM" or "HH:MM:SS"; a trailing suffix such as `12:30pm` is refused.
 ---@param text any
 ---@return number|nil, string|nil  -- nil, "invalid_time"
 function Clock.parse(text)
@@ -73,7 +70,7 @@ end
 ---@param baseSeconds number  second-of-day at the anchor
 ---@param anchorMs number     host-monotonic milliseconds
 ---@param rate number         game seconds per real second
----@param frozen boolean      frozen does not advance; the anchor is rewritten on the freeze
+---@param frozen boolean      a frozen clock does not advance
 ---@param nowMs number
 ---@return number
 function Clock.at(baseSeconds, anchorMs, rate, frozen, nowMs)
@@ -100,7 +97,7 @@ function Clock.rateFromDayLength(minutes)
   if minutes == nil or minutes ~= minutes then return nil, "invalid_day_length" end
   if minutes < 1 or minutes > 10080 then return nil, "invalid_day_length" end
   local rate = DAY_SECONDS / (minutes * 60)
-  -- bounded here because a client past the drift tolerance jumps the world continuously
+  -- bounded: past MAX_RATE a client corrects for drift continuously and the world jumps
   if rate > Clock.MAX_RATE then return nil, "day_too_short" end
   return rate
 end

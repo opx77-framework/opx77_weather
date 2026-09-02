@@ -1,6 +1,7 @@
 -- Operator configuration. Shared, so a client downloads it: no secrets, no ACL grants.
 
 OPX_WEATHER_CONFIG = {
+  LOCALE = "en", -- which locales/<code>.lua player-facing text is read from
   DAY_LENGTH_MINUTES = 180, -- real minutes per day; only 180 matches the engine's own rate
   START_TIME = { HOUR = 12, MINUTE = 0, SECOND = 0 }, -- boot only; a reload keeps the time
   TIME_FROZEN = false, -- start with the clock held at START_TIME
