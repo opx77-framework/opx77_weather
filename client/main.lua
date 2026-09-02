@@ -50,8 +50,17 @@ local lastAppliedSecond = nil
 local lastWeatherRevision = nil
 local stopped = false
 
+--- The scheduler clock in milliseconds; `monotonic` answers SECONDS. A non-finite reading is
+--- dropped rather than propagated: a NaN would expire nothing, an infinity everything.
+---@return integer
+local lastMs = 0
 local function nowMs()
-  return math.floor(Open77.time.monotonic() * 1000)
+  local read, seconds = pcall(Open77.time.monotonic)
+  if read and type(seconds) == "number" and seconds == seconds and
+    seconds >= 0 and seconds < math.huge then
+    lastMs = math.floor(seconds * 1000)
+  end
+  return lastMs
 end
 
 --- Ask the authority for a snapshot.
