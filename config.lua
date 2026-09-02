@@ -1,6 +1,7 @@
 -- Operator configuration. Shared, so a client downloads it: no secrets, no ACL grants.
 
 OPX_WEATHER_CONFIG = {
+  LOCALE = "en", -- which locales/<code>.lua player-facing text is read from
   DAY_LENGTH_MINUTES = 180, -- real minutes per day; only 180 matches the engine's own rate
   START_TIME = { HOUR = 12, MINUTE = 0, SECOND = 0 }, -- boot only; a reload keeps the time
   TIME_FROZEN = false, -- start with the clock held at START_TIME
@@ -28,7 +29,7 @@ OPX_WEATHER_CONFIG = {
   },
 
   COMMANDS = { -- RESTRICTED gates on command.<NAME> in acl.jsonc; NAME = false registers none
-    STATUS = { NAME = "opx77.weather", RESTRICTED = false }, -- time, preset, freezes, roll
+    STATUS = { NAME = "opx77.weather", RESTRICTED = false }, -- time, weather, freezes, roll
     PRESETS = { NAME = "opx77.weather.presets", RESTRICTED = false }, -- what .set accepts
     SET = { NAME = "opx77.weather.set", RESTRICTED = true }, -- <name|preset> [seconds]
     NEXT = { NAME = "opx77.weather.next", RESTRICTED = true }, -- roll now, even if frozen

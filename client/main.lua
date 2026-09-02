@@ -20,9 +20,14 @@ Projection.state = nil
 local lastApplyMs
 
 -- load nothing else: every function below would be a call into nil
-if type(Open77.environment) ~= "table"
-  or type(Open77.environment.setWeather) ~= "function"
-  or type(Open77.environment.setTime) ~= "function" then
+local NATIVES = { "setWeather", "setTime", "getTime", "setWeatherFrozen", "isWeatherFrozen",
+  "setTimeFrozen" }
+local installed = type(Open77.environment) == "table"
+for index = 1, installed and #NATIVES or 0 do
+  installed = type(Open77.environment[NATIVES[index]]) == "function"
+  if not installed then break end
+end
+if not installed then
   Open77.log.warn("environment natives unavailable; restart Cyberpunk to activate them")
   return
 end
@@ -45,8 +50,17 @@ local lastAppliedSecond = nil
 local lastWeatherRevision = nil
 local stopped = false
 
+--- The scheduler clock in milliseconds; `monotonic` answers SECONDS. A non-finite reading is
+--- dropped rather than propagated: a NaN would expire nothing, an infinity everything.
+---@return integer
+local lastMs = 0
 local function nowMs()
-  return math.floor(Open77.time.monotonic() * 1000)
+  local read, seconds = pcall(Open77.time.monotonic)
+  if read and type(seconds) == "number" and seconds == seconds and
+    seconds >= 0 and seconds < math.huge then
+    lastMs = math.floor(seconds * 1000)
+  end
+  return lastMs
 end
 
 --- Ask the authority for a snapshot.
@@ -74,44 +88,51 @@ end
 local function valid(value)
   if type(value) ~= "table" then return false end
   if value.protocol ~= OpxWeather.PROTOCOL then return false end
-  -- bounded above: without a ceiling one forged snapshot latches this client off the real
-  -- authority for the session, because every genuine one is then refused as stale
-  if type(value.authorityEpoch) ~= "number" or value.authorityEpoch < 0 or
-    value.authorityEpoch > 2 ^ 53 or value.authorityEpoch % 1 ~= 0 then
+  -- `Clock.finite` is the one magnitude test: NaN sits inside every bound, an infinity outside
+  -- them, and `% 1 ~= 0` cannot see a non-integer past 2^53
+  if not Clock.finite(value.authorityEpoch) or value.authorityEpoch < 0
+    or value.authorityEpoch % 1 ~= 0 then
     return false
   end
-  -- `% 1 ~= 0` does not bite past 2^53: 1e300 % 1 is exactly 0, and such a
-  -- revision reaches a `%d` further down, which raises. A counter never gets
-  -- near this, so an upper bound is the honest test.
-  if type(value.revision) ~= "number" or value.revision < 1 or
-    value.revision > 2 ^ 53 or value.revision % 1 ~= 0 then
+  if not Clock.finite(value.revision) or value.revision < 1
+    or value.revision % 1 ~= 0 then
     return false
   end
-  if type(value.weatherRevision) ~= "number" or value.weatherRevision < 1 or
-    value.weatherRevision > 2 ^ 53 then
+  if not Clock.finite(value.weatherRevision) or value.weatherRevision < 1
+    or value.weatherRevision % 1 ~= 0 then
     return false
   end
-  -- NaN is caught by the self-comparison; the bounds catch math.huge, which survives it and
-  -- poisons the clock until a `%02d` raises out of the sync handler
-  if type(value.secondsOfDay) ~= "number" or value.secondsOfDay ~= value.secondsOfDay or
-    value.secondsOfDay < 0 or value.secondsOfDay >= 86400 then
+  if not Clock.finite(value.secondsOfDay) or value.secondsOfDay < 0
+    or value.secondsOfDay >= Clock.DAY_SECONDS then
     return false
   end
   -- bounded, not merely positive: past MAX_RATE every drift correction is a world jump
-  if type(value.rate) ~= "number" or value.rate ~= value.rate then return false end
-  if value.rate <= 0 or value.rate > Clock.MAX_RATE then return false end
+  if not Clock.finite(value.rate) or value.rate <= 0 or value.rate > Clock.MAX_RATE then
+    return false
+  end
   if type(value.timeFrozen) ~= "boolean" then return false end
+  if type(value.weatherFrozen) ~= "boolean" then return false end
+  if type(value.weather) ~= "string" or value.weather == "" then return false end
   if type(value.weatherPreset) ~= "string" or value.weatherPreset == "" then return false end
-  if type(value.weatherPriority) ~= "number" or value.weatherPriority < 0 then return false end
-  if type(value.transitionSeconds) ~= "number" or value.transitionSeconds < 0
-    or value.transitionSeconds > 300 then
+  if not Clock.finite(value.weatherPriority) or value.weatherPriority < 0
+    or value.weatherPriority % 1 ~= 0 then
     return false
   end
-  if type(value.weatherTransitionRemainingMs) ~= "number"
+  if not Clock.finite(value.transitionSeconds) or value.transitionSeconds < 0
+    or value.transitionSeconds > OpxWeather.MAX_TRANSITION_SECONDS then
+    return false
+  end
+  if not Clock.finite(value.weatherTransitionRemainingMs)
     or value.weatherTransitionRemainingMs < 0
-    or value.weatherTransitionRemainingMs > 300000 then
+    or value.weatherTransitionRemainingMs > OpxWeather.MAX_TRANSITION_SECONDS * 1000 then
     return false
   end
+  -- nil is the answer rather than a missing field: it is absent while the schedule is frozen
+  if value.nextRollInMs ~= nil
+    and (not Clock.finite(value.nextRollInMs) or value.nextRollInMs < 0) then
+    return false
+  end
+  if type(value.reason) ~= "string" then return false end
   return true
 end
 
@@ -209,12 +230,15 @@ function Projection.apply(value, requestId)
   end
 
   local receivedAt = nowMs()
-  local sentAt = requests[tonumber(requestId) or -1]
+  -- converted once: a NaN id would raise on the way back out as a table key
+  local id = tonumber(requestId)
+  if not Clock.finite(id) then id = nil end
+  local sentAt = id ~= nil and requests[id] or nil
   local compensationMs = 0
   if sentAt ~= nil then
     compensationMs = math.min(SYNC.MAX_LATENCY_MS or 2000,
       math.max(0, receivedAt - sentAt) / 2)
-    requests[tonumber(requestId)] = nil
+    requests[id] = nil
   end
 
   local previousEpoch = held and held.authorityEpoch or nil
@@ -236,7 +260,7 @@ function Projection.apply(value, requestId)
     weather = value.weather,
     weatherPreset = value.weatherPreset,
     weatherPriority = value.weatherPriority,
-    weatherFrozen = value.weatherFrozen == true,
+    weatherFrozen = value.weatherFrozen,
     transitionSeconds = value.transitionSeconds,
     weatherTransitionEndLocalMs = receivedAt + transitionRemainingMs,
     nextRollInMs = value.nextRollInMs,
@@ -266,26 +290,44 @@ function Projection.apply(value, requestId)
   return { ok = true }
 end
 
---- The authority's snapshot.
----
---- The client runtime has a cross-resource event bus, so any resource on the
---- player's machine can raise this name. It cannot forge the weather for anyone
---- else -- the server tells every client directly -- but it CAN latch this one
---- off the real authority by claiming a higher epoch, after which the genuine
---- snapshots are refused as stale. Floored so a forgery has to win a race
---- against the server's own message rather than run in a loop nobody outruns.
+--- The authority's snapshot. Any client-side resource can raise this name, so the floor
+--- below keeps a forged snapshot from latching this client off the real authority.
 RegisterNetEvent(EVENT_SYNC, function(value, requestId)
-  local atMs = math.floor(Open77.time.monotonic() * 1000)
+  local atMs = nowMs()
   if lastApplyMs ~= nil and atMs - lastApplyMs < 100 then return end
   lastApplyMs = atMs
   Projection.apply(value, requestId)
 end)
 
---- The server's answer to a command this player typed; other resources share the event.
-RegisterNetEvent("open77:command:result", function(raw, accepted, message)
+--- The command names this resource configured, lowercased. `raw` is what the player typed, so
+--- matching on these follows a rename in config.lua; matching on the word "weather" would not.
+local COMMAND_NAMES = {}
+for _, entry in pairs(type(Config.COMMANDS) == "table" and Config.COMMANDS or {}) do
+  local name = type(entry) == "table" and entry.NAME or nil
+  if type(name) == "string" and name ~= "" then
+    COMMAND_NAMES[#COMMAND_NAMES + 1] = name:lower()
+  end
+end
+
+--- Whether an answer on the shared channel is to one of this resource's own commands.
+---@param raw string
+---@return boolean
+local function ours(raw)
+  local typed = raw:lower()
+  for index = 1, #COMMAND_NAMES do
+    if typed:find(COMMAND_NAMES[index], 1, true) then return true end
+  end
+  return false
+end
+
+--- The server's answer to a command this player typed; other resources share the event. Its
+--- `message` is the player's catalogue text, so the log takes the fact instead, in English.
+RegisterNetEvent("open77:command:result", function(raw, accepted)
   if type(raw) ~= "string" then return end
-  if not raw:lower():find("weather", 1, true) then return end
-  if accepted then Open77.log.info(tostring(message)) else Open77.log.warn(tostring(message)) end
+  if not ours(raw) then return end
+  local line = ("command answered: %s (%s)")
+    :format(raw, accepted and "accepted" or "refused")
+  if accepted then Open77.log.info(line) else Open77.log.warn(line) end
 end)
 
 AddEventHandler("onClientResourceStart", function(name)
@@ -303,33 +345,39 @@ AddEventHandler("onClientResourceStop", function(name)
   Open77.environment.setWeatherFrozen(false)
 end)
 
+--- Keep the engine's own weather lock on, and re-submit the accepted preset under it.
+local function enforce()
+  if Projection.state == nil then return end
+  -- a lock gone false means something else took the sky
+  local frozen = Open77.environment.isWeatherFrozen()
+  if frozen ~= true then
+    local ok, reason = Open77.environment.setWeatherFrozen(true)
+    if not ok then Open77.log.warn("weather lock restore failed: " .. tostring(reason)) end
+    if remainingTransition() <= 0 then applyWeather(true, 0) end
+  end
+  -- unforced: a no-op once the revision has been applied, a retry while it has not
+  applyWeather(false)
+end
+
+local guarded = OpxWeather.guarded
+
 CreateThread(function()
   while not stopped do
     Wait(SYNC.APPLY_MS or 500)
-    applyTime(false)
+    guarded("time", applyTime, false)
   end
 end)
 
 CreateThread(function()
   while not stopped do
     Wait(SYNC.CLIENT_SYNC_MS or 15000)
-    Projection.requestSync()
+    guarded("sync", Projection.requestSync)
   end
 end)
 
 CreateThread(function()
   while not stopped do
     Wait(SYNC.ENFORCE_MS or 5000)
-    if Projection.state ~= nil then
-      -- a lock gone false is evidence something took the sky; re-submitting blind costs props
-      local frozen = Open77.environment.isWeatherFrozen()
-      if frozen ~= true then
-        local ok, reason = Open77.environment.setWeatherFrozen(true)
-        if not ok then Open77.log.warn("weather lock restore failed: " .. tostring(reason)) end
-        if remainingTransition() <= 0 then applyWeather(true, 0) end
-      end
-      -- unforced: a no-op once the revision has been applied, a retry while it has not
-      applyWeather(false)
-    end
+    guarded("enforce", enforce)
   end
 end)

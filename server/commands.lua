@@ -1,30 +1,40 @@
---- The staff desk. The HOST resolves command.<name> against the ACL before a handler runs,
---- so there is no permission check in this file and there must not be one.
+--- The staff commands. The host resolves `command.<name>` against the ACL before a handler
+--- runs, so no handler here checks a permission.
 
 local Config = OPX_WEATHER_CONFIG
 local Authority = OpxWeather.Authority
 
---- What a player sees while typing, and what the boot log lists.
+--- What a player sees while typing. Catalogue keys, rendered when the suggestions go out.
 local HELP = {
-  STATUS = { text = "Show the synchronized time and weather.", params = {} },
-  PRESETS = { text = "List the configured weather presets.", params = {} },
-  SET = { text = "Cross to a weather preset.", params = {
-    { name = "preset", help = "sunny, rain, fog, sandstorm..." },
-    { name = "seconds", help = "transition length; omit for the preset's own" },
+  STATUS = { text = "weather.help.status", params = {} },
+  PRESETS = { text = "weather.help.presets", params = {} },
+  SET = { text = "weather.help.set", params = {
+    { name = "preset", help = "weather.help.set.preset" },
+    { name = "seconds", help = "weather.help.set.seconds" },
   } },
-  NEXT = { text = "Roll the weighted weather table now.", params = {} },
-  FREEZE = { text = "Hold or release the weather schedule.", params = {
+  NEXT = { text = "weather.help.next", params = {} },
+  FREEZE = { text = "weather.help.freeze", params = {
     { name = "on|off" },
   } },
-  TIME = { text = "Set the authoritative clock.", params = {
-    { name = "HH:MM[:SS]", help = "24-hour, for example 21:30" },
+  TIME = { text = "weather.help.time", params = {
+    { name = "HH:MM[:SS]", help = "weather.help.time.value" },
   } },
-  TIME_FREEZE = { text = "Hold or release the clock.", params = {
+  TIME_FREEZE = { text = "weather.help.timeFreeze", params = {
     { name = "on|off" },
   } },
-  DAY_LENGTH = { text = "Set how many real minutes a day takes.", params = {
-    { name = "minutes", help = "180 matches the engine's own rate" },
+  DAY_LENGTH = { text = "weather.help.dayLength", params = {
+    { name = "minutes", help = "weather.help.dayLength.minutes" },
   } },
+}
+
+--- Error CODES stay codes on the wire; a player reads them through the catalogue.
+local ERROR_KEYS = {
+  invalid_time = "weather.error.invalidTime",
+  invalid_day_length = "weather.error.invalidDayLength",
+  day_too_short = "weather.error.dayTooShort",
+  unknown_preset = "weather.error.unknownPreset",
+  invalid_transition = "weather.error.invalidTransition",
+  no_presets = "weather.error.noPresets",
 }
 
 --- The names actually registered, for the chat suggestions and the boot banner.
@@ -44,15 +54,73 @@ local function answer(source, raw, ok, message)
   if ok then Open77.log.info(message) else Open77.log.warn(message) end
 end
 
+--- Whether the answer goes to a player, who reads the catalogue, or to the log, which does not.
+---@param source integer|nil
+---@return boolean
+local function toPlayer(source)
+  return (tonumber(source) or 0) > 0
+end
+
+--- The status composed for a player. `Authority.statusText()` is the operator's own form.
+---@return string
+local function statusLine()
+  local status = Authority.status()
+  local parts = {
+    locale("weather.status", {
+      time = ("%02d:%02d:%02d"):format(status.hour, status.minute, status.second),
+      minutes = math.floor(status.dayLengthMinutes + 0.5),
+      weather = status.weather,
+    }),
+  }
+  if status.timeFrozen then parts[#parts + 1] = locale("weather.status.clockHeld") end
+  if status.weatherFrozen then
+    parts[#parts + 1] = locale("weather.status.scheduleHeld")
+  else
+    parts[#parts + 1] = locale("weather.status.nextRoll",
+      { seconds = status.nextRollInSeconds or 0 })
+  end
+  parts[#parts + 1] = locale("weather.status.revision", { revision = status.revision })
+  if not Authority.ready then parts[#parts + 1] = locale("weather.status.degraded") end
+  return table.concat(parts, " ")
+end
+
+--- It worked: the player reads the status, the log keeps the operator's English line.
+---@param source integer|nil
+---@param raw string|nil
+local function accept(source, raw)
+  answer(source, raw, true, toPlayer(source) and statusLine() or Authority.statusText())
+end
+
+--- It did not: catalogue text to the player, `console` to the log, which stays English.
+---@param source integer|nil
+---@param raw string|nil
+---@param key string
+---@param params table|nil
+---@param console string
+local function refuse(source, raw, key, params, console)
+  answer(source, raw, false, toPlayer(source) and locale(key, params) or console)
+end
+
+--- Refuse with the code a mutator answered, without renaming it for the log.
+---@param source integer|nil
+---@param raw string|nil
+---@param code string|nil
+local function refuseCode(source, raw, code)
+  refuse(source, raw, ERROR_KEYS[code] or "weather.error.unknown", nil, tostring(code))
+end
+
 --- How many arguments were typed; `n` is authoritative, `#args` reads 1 for a single nil.
 ---@param args table|nil
 ---@return integer
 local function count(args)
   if type(args) ~= "table" then return 0 end
-  return tonumber(args.n) or #args
+  local given = tonumber(args.n)
+  -- a NaN `n` sits inside every range test below, so `#args` answers instead
+  if not OpxWeather.Clock.finite(given) or given < 0 or given % 1 ~= 0 then return #args end
+  return given
 end
 
---- `on` / `off`, and nothing else -- a bare toggle would have to be run twice to be read.
+--- `on` / `off` and their synonyms; nil for anything else.
 ---@param value any
 ---@return boolean|nil
 local function onOff(value)
@@ -61,7 +129,7 @@ local function onOff(value)
   return nil
 end
 
---- Last run per player, per open command. Keyed by session playerId, which the host recycles.
+--- Last run per player, per command, for the two-second cooldown.
 local lastCommandMs = {}
 
 ---@param source integer|nil
@@ -69,7 +137,7 @@ local lastCommandMs = {}
 ---@return boolean  true when this one should be dropped
 local function cooled(source, key)
   local player = tonumber(source) or 0
-  -- the console is never cooled: an operator's own terminal is not a rate to limit
+  -- the console is never cooled
   if player <= 0 then return false end
   local slot = player .. ":" .. key
   local atMs = math.floor(Open77.time.monotonic() * 1000)
@@ -79,6 +147,7 @@ local function cooled(source, key)
   return false
 end
 
+-- the only departure event this platform raises
 AddEventHandler("onPlayerDisconnected", function(playerId)
   local player = tonumber(playerId) or 0
   for slot in pairs(lastCommandMs) do
@@ -126,20 +195,29 @@ end
 
 register("STATUS", function(source, _, raw)
   if cooled(source, "status") then return end
-  answer(source, raw, true, Authority.statusText())
+  accept(source, raw)
 end)
 
 register("PRESETS", function(source, _, raw)
   if cooled(source, "presets") then return end
-  local lines = { "weather presets (name / engine preset / weight / seconds):" }
+  local player = toPlayer(source)
+  local lines = { player and locale("weather.presets.header")
+    or "weather presets (name / engine preset / weight / seconds):" }
   local presets = Authority.presets()
   for index = 1, #presets do
     local definition = presets[index]
-    -- `%g` on the two the loader does not floor: `%d` on a number with no integer form raises
-    lines[#lines + 1] = ("  %-12s %-26s w=%-3s %d..%ds  transition %ss"):format(
-      definition.NAME, definition.PRESET, ("%g"):format(definition.WEIGHT),
-      definition.MIN_SECONDS, definition.MAX_SECONDS,
-      ("%g"):format(definition.TRANSITION_SECONDS))
+    local row = {
+      name = ("%-12s"):format(definition.NAME),
+      preset = ("%-26s"):format(definition.PRESET),
+      -- `%g` on the two the loader does not floor: `%d` on a number with no integer form raises
+      weight = ("%-3s"):format(("%g"):format(definition.WEIGHT)),
+      min = definition.MIN_SECONDS,
+      max = definition.MAX_SECONDS,
+      transition = ("%g"):format(definition.TRANSITION_SECONDS),
+    }
+    lines[#lines + 1] = player and locale("weather.presets.row", row)
+      or ("  %s %s w=%s %d..%ds  transition %ss"):format(
+        row.name, row.preset, row.weight, row.min, row.max, row.transition)
   end
   answer(source, raw, true, table.concat(lines, "\n"))
 end)
@@ -147,59 +225,67 @@ end)
 register("SET", function(source, args, raw)
   local given = count(args)
   if given < 1 or given > 2 then
-    return answer(source, raw, false, "usage: <preset> [transitionSeconds]")
+    return refuse(source, raw, "weather.usage.set", nil,
+      "usage: <preset> [transitionSeconds]")
   end
   local result = Authority.setWeather(args[1], args[2], "command_set")
   if not result.ok then
-    local hint = result.error == "unknown_preset"
-      and ("  -- run %s"):format(
-        (Config.COMMANDS.PRESETS or {}).NAME or "the presets command")
-      or ""
-    return answer(source, raw, false, result.error .. hint)
+    local presets = Config.COMMANDS and (Config.COMMANDS.PRESETS or {}).NAME or nil
+    if result.error == "unknown_preset" and type(presets) == "string" and presets ~= "" then
+      return refuse(source, raw, "weather.error.presetHint", { command = presets },
+        ("unknown_preset -- run %s"):format(presets))
+    end
+    return refuseCode(source, raw, result.error)
   end
-  answer(source, raw, true, Authority.statusText())
+  accept(source, raw)
 end, true)
 
 register("NEXT", function(source, args, raw)
-  if count(args) ~= 0 then return answer(source, raw, false, "usage: no arguments") end
+  if count(args) ~= 0 then
+    return refuse(source, raw, "weather.usage.next", nil, "usage: no arguments")
+  end
   local result = Authority.roll("command_next")
-  if not result.ok then return answer(source, raw, false, result.error) end
-  answer(source, raw, true, Authority.statusText())
+  if not result.ok then return refuseCode(source, raw, result.error) end
+  accept(source, raw)
 end, true)
 
 register("FREEZE", function(source, args, raw)
   local wanted = onOff(args and args[1])
   if count(args) ~= 1 or wanted == nil then
-    return answer(source, raw, false, "usage: <on|off>")
+    return refuse(source, raw, "weather.usage.freeze", nil, "usage: <on|off>")
   end
   Authority.setWeatherFrozen(wanted, "command_freeze")
-  answer(source, raw, true, Authority.statusText())
+  accept(source, raw)
 end, true)
 
 register("TIME", function(source, args, raw)
-  if count(args) ~= 1 then return answer(source, raw, false, "usage: <HH:MM[:SS]>") end
+  if count(args) ~= 1 then
+    return refuse(source, raw, "weather.usage.time", nil, "usage: <HH:MM[:SS]>")
+  end
   local seconds = OpxWeather.Clock.parse(args[1])
-  if seconds == nil then return answer(source, raw, false, "invalid_time") end
+  if seconds == nil then return refuseCode(source, raw, "invalid_time") end
   local hour, minute, second = OpxWeather.Clock.toHms(seconds)
   local result = Authority.setTime(hour, minute, second, "command_time")
-  if not result.ok then return answer(source, raw, false, result.error) end
-  answer(source, raw, true, Authority.statusText())
+  if not result.ok then return refuseCode(source, raw, result.error) end
+  accept(source, raw)
 end, true)
 
 register("TIME_FREEZE", function(source, args, raw)
   local wanted = onOff(args and args[1])
   if count(args) ~= 1 or wanted == nil then
-    return answer(source, raw, false, "usage: <on|off>")
+    return refuse(source, raw, "weather.usage.timeFreeze", nil, "usage: <on|off>")
   end
   Authority.setTimeFrozen(wanted, "command_time_freeze")
-  answer(source, raw, true, Authority.statusText())
+  accept(source, raw)
 end, true)
 
 register("DAY_LENGTH", function(source, args, raw)
-  if count(args) ~= 1 then return answer(source, raw, false, "usage: <realMinutes>") end
+  if count(args) ~= 1 then
+    return refuse(source, raw, "weather.usage.dayLength", nil, "usage: <realMinutes>")
+  end
   local result = Authority.setDayLength(args[1], "command_day_length")
-  if not result.ok then return answer(source, raw, false, result.error) end
-  answer(source, raw, true, Authority.statusText())
+  if not result.ok then return refuseCode(source, raw, result.error) end
+  accept(source, raw)
 end, true)
 
 RegisterNetEvent("chat:ready", function()
@@ -210,9 +296,20 @@ RegisterNetEvent("chat:ready", function()
   local suggestions = {}
   for index = 1, #registered do
     local command = registered[index]
-    local help = HELP[command.key] or { text = "", params = {} }
-    suggestions[index] =
-      { command = "/" .. command.name, help = help.text, parameters = help.params }
+    local help = HELP[command.key]
+    local parameters = {}
+    for position = 1, help and #help.params or 0 do
+      local parameter = help.params[position]
+      parameters[position] = {
+        name = parameter.name,
+        help = parameter.help and locale(parameter.help) or nil,
+      }
+    end
+    suggestions[index] = {
+      command = "/" .. command.name,
+      help = help and locale(help.text) or "",
+      parameters = parameters,
+    }
   end
   TriggerClientEvent("chat:addSuggestions", player, suggestions)
 end)

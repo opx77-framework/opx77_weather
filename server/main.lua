@@ -1,16 +1,24 @@
 --- The wiring: the one inbound event, the scheduler loop, and the boot banner.
 
-local Config = OPX_WEATHER_CONFIG
 local Authority = OpxWeather.Authority
 local Clock = OpxWeather.Clock
 
---- Client to server, and the only inbound event: there is deliberately no mutation event.
+--- The only inbound event; clients can ask for a snapshot but never mutate.
 local EVENT_REQUEST = "opx77:weather:request"
 
 local SYNC = OpxWeather.SYNC
 
+--- The scheduler clock in milliseconds; `monotonic` answers SECONDS. A non-finite reading is
+--- dropped rather than propagated: a NaN would expire nothing, an infinity everything.
+---@return integer
+local lastMs = 0
 local function nowMs()
-  return math.floor(Open77.time.monotonic() * 1000)
+  local read, seconds = pcall(Open77.time.monotonic)
+  if read and type(seconds) == "number" and seconds == seconds and
+    seconds >= 0 and seconds < math.huge then
+    lastMs = math.floor(seconds * 1000)
+  end
+  return lastMs
 end
 
 --- Last request per player, for the floor between two of them. Keyed by session playerId.
@@ -22,9 +30,7 @@ RegisterNetEvent(EVENT_REQUEST, function(requestId)
   if player <= 0 then return end
 
   requestId = tonumber(requestId)
-  if requestId == nil or requestId ~= requestId or requestId < 1 or requestId % 1 ~= 0 then
-    return
-  end
+  if not Clock.finite(requestId) or requestId < 1 or requestId % 1 ~= 0 then return end
 
   local atMs = nowMs()
   local previous = lastRequestMs[player]
@@ -34,29 +40,37 @@ RegisterNetEvent(EVENT_REQUEST, function(requestId)
   Authority.publish("request", player, requestId)
 end)
 
---- The one departure event this platform raises, and the only thing keeping `lastRequestMs`
---- from growing for the life of the process. There used to be a second handler on
---- `playerDropped` here, on the assumption that the host raises both: it does not. The name
---- occurs in the shipped server binary only inside the platform's own embedded Lua bootstrap,
---- which registers a handler for it that nothing ever fires; no assembly emits it. A second
---- handler would therefore have been dead code that made this cleanup look doubly covered.
+-- the only departure event this platform raises
 AddEventHandler("onPlayerDisconnected", function(playerId)
   lastRequestMs[tonumber(playerId) or 0] = nil
 end)
 
-CreateThread(function()
-  -- seeded on the first slice: at file scope the monotonic clock still reads zero
-  math.randomseed(math.floor(Open77.time.monotonic() * 1000000) % 2147483647)
+local guarded = OpxWeather.guarded
 
-  local nextHeartbeatMs = nowMs() + (SYNC.HEARTBEAT_MS or 5000)
+--- When the next heartbeat is due, whether or not a roll published in the meantime.
+local nextHeartbeatMs = 0
+
+--- Seeded on the first slice: at file scope the monotonic clock still reads zero.
+local function seed()
+  math.randomseed(math.floor(Open77.time.monotonic() * 1000000) % 2147483647)
+  nextHeartbeatMs = nowMs() + (SYNC.HEARTBEAT_MS or 5000)
+end
+
+--- Roll if one is due, and republish on the heartbeat if nothing else did.
+local function schedule()
+  local atMs = nowMs()
+  local published = Authority.tick(atMs)
+  if atMs >= nextHeartbeatMs then
+    if not published then Authority.publish("heartbeat") end
+    nextHeartbeatMs = atMs + (SYNC.HEARTBEAT_MS or 5000)
+  end
+end
+
+CreateThread(function()
+  guarded("seed", seed)
   while true do
     Wait(SYNC.SCHEDULER_MS or 1000)
-    local atMs = nowMs()
-    local published = Authority.tick(atMs)
-    if atMs >= nextHeartbeatMs then
-      if not published then Authority.publish("heartbeat") end
-      nextHeartbeatMs = atMs + (SYNC.HEARTBEAT_MS or 5000)
-    end
+    guarded("schedule", schedule)
   end
 end)
 
@@ -69,14 +83,11 @@ else
     hour, minute, second, Authority.state.weather))
 end
 
---- Warns once if the official package this one replaces is also running. `GetResourceState`
---- is the only way to ask: server resources cannot call each other. Deferred to a thread
---- rather than run at file scope, because at load time a conflicting resource listed after
---- this one in `resources.load` is still `discovered` and the warning would silently not
---- fire -- which would make it depend on load order, the one thing an operator did not
---- choose. The host answers lowercase; `:lower()` costs nothing and survives it changing.
+--- Warns once if the package this one replaces is running too. In a thread, not at file
+--- scope: a resource that starts after this one is not running yet when this file loads.
 CreateThread(function()
-  local official = tostring(GetResourceState("open77_weather") or ""):lower()
+  local read, official = pcall(GetResourceState, "open77_weather")
+  official = read and tostring(official or ""):lower() or ""
   if official ~= "running" and official ~= "starting" then return end
   Open77.log.warn("open77_weather is running and is the package this one replaces")
   Open77.log.warn("  two authorities both hold world.environment: the clock is corrected twice")

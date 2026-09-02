@@ -14,17 +14,28 @@ local EVENT_SYNC = "opx77:weather:sync"
 --- Raised for another file in THIS resource; TriggerEvent is per-VM on the server.
 local EVENT_STATE = "opx77:weather:state"
 
---- `Open77.time.monotonic()` answers SECONDS on both sides, exactly as the API reference says;
---- the server binary divides its millisecond scheduler clock by 1000 before handing it over.
+--- The scheduler clock in milliseconds; `monotonic` answers SECONDS. A non-finite reading is
+--- dropped rather than propagated: a NaN would expire nothing, an infinity everything.
+---@return integer
+local lastMs = 0
 local function nowMs()
-  return math.floor(Open77.time.monotonic() * 1000)
+  local read, seconds = pcall(Open77.time.monotonic)
+  if read and type(seconds) == "number" and seconds == seconds and
+    seconds >= 0 and seconds < math.huge then
+    lastMs = math.floor(seconds * 1000)
+  end
+  return lastMs
 end
 
 local order, index = {}, {}
 
+--- A configured number, or the fallback for anything a `%d` or math.random cannot take.
+---@param value any
+---@param fallback number
+---@return number
 local function number(value, fallback)
   value = tonumber(value)
-  if value == nil or value ~= value then return fallback end
+  if not Clock.finite(value) then return fallback end
   return value
 end
 
@@ -45,7 +56,9 @@ for position = 1, type(configured) == "table" and #configured or 0 do
       WEIGHT = math.max(0, number(row.WEIGHT, 0)),
       MIN_SECONDS = minimum,
       MAX_SECONDS = maximum,
-      TRANSITION_SECONDS = math.max(0, number(row.TRANSITION_SECONDS, 20)),
+      -- clamped to the bound a client validates against: past it every snapshot is refused
+      TRANSITION_SECONDS = math.min(OpxWeather.MAX_TRANSITION_SECONDS,
+        math.max(0, number(row.TRANSITION_SECONDS, 20))),
     }
     order[#order + 1] = definition
     index[name:lower()] = definition
@@ -53,7 +66,7 @@ for position = 1, type(configured) == "table" and #configured or 0 do
   end
 end
 
---- Whether the authority has anything to work with. False disables every mutation.
+--- Whether the authority has a preset table. False refuses every WEATHER mutation.
 Authority.ready = #order > 0
 
 --- Resolve a NAME or an engine PRESET to its row, without case.
@@ -74,7 +87,12 @@ local bootSeconds = Clock.fromHms(
   (Config.START_TIME or {}).HOUR, (Config.START_TIME or {}).MINUTE,
   (Config.START_TIME or {}).SECOND) or Clock.fromHms(12, 0, 0)
 
-local bootRate = Clock.rateFromDayLength(Config.DAY_LENGTH_MINUTES) or 8.0
+local bootRate, rateFailure = Clock.rateFromDayLength(Config.DAY_LENGTH_MINUTES)
+if bootRate == nil then
+  bootRate = 8.0
+  Open77.log.warn(("DAY_LENGTH_MINUTES '%s' refused (%s); starting on 180")
+    :format(tostring(Config.DAY_LENGTH_MINUTES), tostring(rateFailure)))
+end
 
 local bootWeather = Authority.preset(Config.INITIAL_WEATHER) or order[1]
 if Authority.ready and Authority.preset(Config.INITIAL_WEATHER) == nil then
@@ -126,7 +144,7 @@ local function saveState()
   Open77.state.save(carried)
 end
 
---- Adopt the previous generation's snapshot, or refuse it whole -- it is untrusted input.
+--- Adopt the previous generation's carried state, or refuse it whole. Untrusted input.
 ---@return boolean adopted
 local function restoreState()
   local carried = Open77.state.load()
@@ -147,17 +165,24 @@ local function restoreState()
 
   for index = 1, #CARRIED_NUMBERS do
     local field = CARRIED_NUMBERS[index]
-    local value = carried[field]
-    -- `value ~= value` is the NaN test: a NaN anchor freezes the clock silently
-    if type(value) ~= "number" or value ~= value then
-      Open77.log.warn(("carried state ignored: field '%s' is not a number"):format(field))
+    if not Clock.finite(carried[field]) then
+      Open77.log.warn(("carried state ignored: field '%s' is not a finite number")
+        :format(field))
       return false
     end
   end
-  if type(carried.authorityEpoch) ~= "number" or carried.authorityEpoch < 0 then return false end
+  if not Clock.finite(carried.authorityEpoch) or carried.authorityEpoch < 0
+    or carried.authorityEpoch % 1 ~= 0 then
+    return false
+  end
   if carried.revision < 1 or carried.weatherRevision < 1 then return false end
-  -- same ceiling as the wire: a bag outlives the build whose bound was wider
+  if carried.revision % 1 ~= 0 or carried.weatherRevision % 1 ~= 0 then return false end
+  -- the wire's own bounds: carried state can outlive a build that held wider ones
   if carried.rate <= 0 or carried.rate > Clock.MAX_RATE then return false end
+  if carried.transitionSeconds < 0
+    or carried.transitionSeconds > OpxWeather.MAX_TRANSITION_SECONDS then
+    return false
+  end
 
   for index = 1, #CARRIED_NUMBERS do
     local field = CARRIED_NUMBERS[index]
@@ -288,7 +313,7 @@ function Authority.setDayLength(minutes, reason)
   rebase(nowMs())
   state.rate = rate
   commit(reason or "day_length_changed")
-  return { ok = true, minutes = tonumber(minutes), rate = rate }
+  return { ok = true, minutes = Clock.DAY_SECONDS / rate / 60, rate = rate }
 end
 
 --- Draw this preset's next duration, at the moment it starts.
@@ -309,10 +334,10 @@ function Authority.setWeather(value, transitionSeconds, reason)
   local transition = definition.TRANSITION_SECONDS
   if transitionSeconds ~= nil then
     transition = tonumber(transitionSeconds)
-    if transition == nil or transition ~= transition then
+    if not Clock.finite(transition) then
       return { ok = false, error = "invalid_transition" }
     end
-    if transition < 0 or transition > 300 then
+    if transition < 0 or transition > OpxWeather.MAX_TRANSITION_SECONDS then
       return { ok = false, error = "invalid_transition" }
     end
   end
@@ -366,7 +391,7 @@ function Authority.chooseNext(roll)
   if total <= 0 then return Authority.preset(state.weather) end
 
   roll = tonumber(roll)
-  if roll == nil or roll ~= roll or roll < 0 or roll >= 1 then roll = math.random() end
+  if not Clock.finite(roll) or roll < 0 or roll >= 1 then roll = math.random() end
   local point = roll * total
   for index = 1, count do
     local candidate = candidates[index]
@@ -397,21 +422,19 @@ function Authority.tick(atMs)
   return Authority.roll("weather_scheduled").ok == true
 end
 
---- Everything a status line needs, resolved in one place.
+--- Everything a status line needs, resolved in one place. Rendered by `statusText()` below
+--- and by `statusLine()` in server/commands.lua: a new field must be added to both.
 ---@return WeatherStatus
 function Authority.status()
   local hour, minute, second = Clock.toHms(Authority.secondsNow())
-  local definition = Authority.preset(state.weather)
   return {
     ok = true,
     hour = hour,
     minute = minute,
     second = second,
     dayLengthMinutes = Clock.DAY_SECONDS / state.rate / 60,
-    rate = state.rate,
     timeFrozen = state.timeFrozen,
     weather = state.weather,
-    preset = definition and definition.PRESET or "",
     weatherFrozen = state.weatherFrozen,
     nextRollInSeconds = state.weatherFrozen and nil
       or math.max(0, math.floor((state.nextRollAtMs - nowMs()) / 1000)),
@@ -419,11 +442,12 @@ function Authority.status()
   }
 end
 
---- One line of it, for a console and for a chat answer. The boot banner prints it too.
+--- One line of it for the operator: the console answer and the boot banner. Stays
+--- English; a player reads the catalogue line composed in server/commands.lua.
 ---@return string
 function Authority.statusText()
   local status = Authority.status()
-  return ("weather: %02d:%02d:%02d  day=%dmin%s  preset=%s%s  rev=%d%s"):format(
+  return ("weather: %02d:%02d:%02d  day=%dmin%s  weather=%s%s  rev=%d%s"):format(
     status.hour, status.minute, status.second,
     math.floor(status.dayLengthMinutes + 0.5),
     status.timeFrozen and " (clock held)" or "",

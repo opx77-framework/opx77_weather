@@ -1,4 +1,4 @@
---- The public surface: read-only, because an authority another resource can move is not one.
+--- The resource's public exports. Read-only.
 
 local Clock = OpxWeather.Clock
 local Projection = OpxWeather.Projection
