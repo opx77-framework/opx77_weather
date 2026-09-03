@@ -14,18 +14,7 @@ local EVENT_SYNC = "opx77:weather:sync"
 --- Raised for another file in THIS resource; TriggerEvent is per-VM on the server.
 local EVENT_STATE = "opx77:weather:state"
 
---- The scheduler clock in milliseconds; `monotonic` answers SECONDS. A non-finite reading is
---- dropped rather than propagated: a NaN would expire nothing, an infinity everything.
----@return integer
-local lastMs = 0
-local function nowMs()
-  local read, seconds = pcall(Open77.time.monotonic)
-  if read and type(seconds) == "number" and seconds == seconds and
-    seconds >= 0 and seconds < math.huge then
-    lastMs = math.floor(seconds * 1000)
-  end
-  return lastMs
-end
+local nowMs = OpxWeather.nowMs
 
 local order, index = {}, {}
 
@@ -205,7 +194,9 @@ local function ensureAnchored()
   state.anchorMs = atMs
   state.weatherChangedAtMs = atMs
   state.nextRollAtMs = atMs + math.max(0, number(OpxWeather.INITIAL_WEATHER_SECONDS, 180)) * 1000
-  authorityEpoch = math.floor(Open77.time.monotonic() * 1000000)
+  -- microseconds, from the reading already taken: monotonic rises across a reload, so a later
+  -- incarnation always outranks an earlier one
+  authorityEpoch = atMs * 1000
   anchored = true
   -- without this, a reload before the first mutation still sends the day back to noon
   saveState()
