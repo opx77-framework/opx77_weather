@@ -50,11 +50,25 @@
 ---@field nextRollInMs number|nil     absent while the schedule is frozen
 ---@field reason WeatherReason
 
---- What the client holds after accepting a snapshot, re-based onto its own monotonic clock.
----@class WeatherProjection : WeatherSnapshot
----@field anchorLocalMs number             local ms the snapshot was accepted at
----@field weatherTransitionEndLocalMs number
----@field latencyCompensationMs number     half the round trip, bounded
+--- The client's re-based snapshot, and the payload of `opx77:weather:updated`. Not a
+--- WeatherSnapshot: `protocol` and `weatherTransitionRemainingMs` do not survive the rebase.
+---@class WeatherProjection
+---@field authorityEpoch number
+---@field revision integer
+---@field weatherRevision integer
+---@field secondsOfDay number                 the time at `anchorLocalMs`, not the time now
+---@field anchorLocalMs number                local ms the snapshot was accepted at
+---@field rate number                         game seconds per real second
+---@field timeFrozen boolean
+---@field weather string
+---@field weatherPreset string
+---@field weatherPriority integer
+---@field weatherFrozen boolean
+---@field transitionSeconds number
+---@field weatherTransitionEndLocalMs number  when the crossfade ends, on the local clock
+---@field nextRollInMs number|nil             absent while the schedule is frozen
+---@field latencyCompensationMs number        half the round trip, bounded
+---@field reason WeatherReason
 
 --- Every mutator in server/state.lua answers one of these and never raises.
 ---@class WeatherResult
@@ -91,7 +105,7 @@
 ---@field nextRollInSeconds integer|nil  absent while the schedule is frozen
 ---@field revision integer
 
---- What the `getState` export answers, projected to the instant of the call.
+--- What the `state` export answers, projected to the instant of the call.
 ---@class WeatherStateResponse : WeatherResult
 ---@field hour integer|nil
 ---@field minute integer|nil

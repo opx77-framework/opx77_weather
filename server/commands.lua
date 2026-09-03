@@ -140,7 +140,7 @@ local function cooled(source, key)
   -- the console is never cooled
   if player <= 0 then return false end
   local slot = player .. ":" .. key
-  local atMs = math.floor(Open77.time.monotonic() * 1000)
+  local atMs = OpxWeather.nowMs()
   local previous = lastCommandMs[slot]
   if previous ~= nil and atMs - previous < 2000 then return true end
   lastCommandMs[slot] = atMs

@@ -8,18 +8,7 @@ local EVENT_REQUEST = "opx77:weather:request"
 
 local SYNC = OpxWeather.SYNC
 
---- The scheduler clock in milliseconds; `monotonic` answers SECONDS. A non-finite reading is
---- dropped rather than propagated: a NaN would expire nothing, an infinity everything.
----@return integer
-local lastMs = 0
-local function nowMs()
-  local read, seconds = pcall(Open77.time.monotonic)
-  if read and type(seconds) == "number" and seconds == seconds and
-    seconds >= 0 and seconds < math.huge then
-    lastMs = math.floor(seconds * 1000)
-  end
-  return lastMs
-end
+local nowMs = OpxWeather.nowMs
 
 --- Last request per player, for the floor between two of them. Keyed by session playerId.
 local lastRequestMs = {}

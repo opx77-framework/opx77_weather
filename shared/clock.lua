@@ -35,6 +35,19 @@ function OpxWeather.guarded(label, fn, ...)
   end
 end
 
+--- Host-monotonic milliseconds; `Open77.time.monotonic` answers SECONDS. A failed or
+--- non-finite reading holds the last one: a NaN would expire nothing, an infinity everything.
+---@return integer
+local lastMs = 0
+function OpxWeather.nowMs()
+  local read, seconds = pcall(Open77.time.monotonic)
+  if read and type(seconds) == "number" and seconds == seconds and
+    seconds >= 0 and seconds < math.huge then
+    lastMs = math.floor(seconds * 1000)
+  end
+  return lastMs
+end
+
 
 local Clock = {}
 OpxWeather.Clock = Clock

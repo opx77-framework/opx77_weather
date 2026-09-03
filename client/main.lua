@@ -12,7 +12,7 @@ OpxWeather.Projection = Projection
 Projection.available = false
 
 --- The last accepted snapshot, plus the local clock it was anchored against.
----@type table|nil
+---@type WeatherProjection|nil
 Projection.state = nil
 
 --- When the last snapshot was applied, for the floor on the sync handler.
@@ -48,20 +48,11 @@ local requests = {}
 
 local lastAppliedSecond = nil
 local lastWeatherRevision = nil
+--- Whether the engine clock is held, so the native is only called on a change.
+local lastTimeFrozen = nil
 local stopped = false
 
---- The scheduler clock in milliseconds; `monotonic` answers SECONDS. A non-finite reading is
---- dropped rather than propagated: a NaN would expire nothing, an infinity everything.
----@return integer
-local lastMs = 0
-local function nowMs()
-  local read, seconds = pcall(Open77.time.monotonic)
-  if read and type(seconds) == "number" and seconds == seconds and
-    seconds >= 0 and seconds < math.huge then
-    lastMs = math.floor(seconds * 1000)
-  end
-  return lastMs
-end
+local nowMs = OpxWeather.nowMs
 
 --- Ask the authority for a snapshot.
 ---@return table  -- { ok = true } | { ok = false, error = "request_failed" }
@@ -151,6 +142,18 @@ end
 local function applyTime(allowRewind)
   local expected = projectedSeconds()
   if expected == nil then return end
+  -- the engine's own clock has to be held too: a held authority projects one second forever,
+  -- and the unchanged-second return below would then never look at the engine again
+  local held = Projection.state.timeFrozen
+  if held ~= lastTimeFrozen then
+    local frozenOk, frozenReason = Open77.environment.setTimeFrozen(held)
+    if frozenOk then
+      lastTimeFrozen = held
+    else
+      Open77.log.warn("time freeze failed: " .. tostring(frozenReason))
+    end
+  end
+
   local whole = math.floor(expected)
   if lastAppliedSecond ~= nil and whole == lastAppliedSecond then return end
 
@@ -334,6 +337,7 @@ AddEventHandler("onClientResourceStart", function(name)
   if name ~= GetCurrentResourceName() then return end
   -- released first: a client reconnecting into a lock an older generation left never thaws
   Open77.environment.setTimeFrozen(false)
+  lastTimeFrozen = false
   Projection.requestSync()
 end)
 

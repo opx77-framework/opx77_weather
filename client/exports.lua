@@ -5,7 +5,7 @@ local Projection = OpxWeather.Projection
 
 --- The synchronized time and weather, projected to the instant of the call.
 ---@return WeatherStateResponse  -- ok = false before the first snapshot, or without natives
-exports("getState", function()
+exports("state", function()
   if not Projection.available then
     return { ok = false, error = "environment_unavailable" }
   end
@@ -13,7 +13,7 @@ exports("getState", function()
   if state == nil then return { ok = false, error = "not_synchronized" } end
 
   local seconds = Clock.at(state.secondsOfDay, state.anchorLocalMs, state.rate,
-    state.timeFrozen, math.floor(Open77.time.monotonic() * 1000))
+    state.timeFrozen, OpxWeather.nowMs())
   local hour, minute, second = Clock.toHms(seconds)
   return {
     ok = true,

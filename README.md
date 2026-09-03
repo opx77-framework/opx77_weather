@@ -60,10 +60,10 @@ It recognises them by the names in `config.lua`, so a rename carries.
 
 | Export | Answers |
 |---|---|
-| `getState` | the time, the rate, the preset, and whether the authority has been heard from |
+| `state` | the time, the rate, the preset, and whether the authority has been heard from |
 
-`getState` answers `{ ok = false, error = ... }` until the first snapshot is accepted, and on a
-client with no environment natives.
+`state` answers `{ ok = false, error = ... }` until the first snapshot is accepted, and on a
+client with no environment natives. It was called `getState` before 0.3.0.
 
 ## Configuration
 
