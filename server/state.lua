@@ -194,9 +194,12 @@ local function ensureAnchored()
   state.anchorMs = atMs
   state.weatherChangedAtMs = atMs
   state.nextRollAtMs = atMs + math.max(0, number(OpxWeather.INITIAL_WEATHER_SECONDS, 180)) * 1000
-  -- microseconds, from the reading already taken: monotonic rises across a reload, so a later
-  -- incarnation always outranks an earlier one
-  authorityEpoch = atMs * 1000
+  -- A client adopts a NEW epoch outright, so this number must only ever rise. Monotonic
+  -- milliseconds rise across a RELOAD but restart near zero with the process, which made a
+  -- fresh incarnation rank BELOW the one clients were still holding: every snapshot it sent
+  -- was classed stale and those clients kept the old sky. The wall clock is the only reading
+  -- that keeps rising across a restart; monotonic remains the fallback where there is none.
+  authorityEpoch = OpxWeather.unixMs() or (atMs * 1000)
   anchored = true
   -- without this, a reload before the first mutation still sends the day back to noon
   saveState()

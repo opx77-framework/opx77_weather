@@ -129,30 +129,37 @@ local function onOff(value)
   return nil
 end
 
---- Last run per player, per command, for the two-second cooldown.
+--- Last run per player, per command, for the two-second cooldown. Nested rather than keyed
+--- by a built string: the string form had to be re-parsed with `^(%d+):` to be cleaned up,
+--- and Lua 5.4 keeps 12 and 12.0 apart, so a float id produced a key that never matched the
+--- pattern and was never reclaimed. Dropping a player is now one assignment, not a scan of
+--- every slot on the server.
+---@type table<integer, table<string, integer>>
 local lastCommandMs = {}
 
 ---@param source integer|nil
 ---@param key string
 ---@return boolean  true when this one should be dropped
 local function cooled(source, key)
-  local player = tonumber(source) or 0
+  local player = math.floor(tonumber(source) or 0)
   -- the console is never cooled
   if player <= 0 then return false end
-  local slot = player .. ":" .. key
+  local slots = lastCommandMs[player]
+  if slots == nil then
+    slots = {}
+    lastCommandMs[player] = slots
+  end
   local atMs = OpxWeather.nowMs()
-  local previous = lastCommandMs[slot]
+  local previous = slots[key]
   if previous ~= nil and atMs - previous < 2000 then return true end
-  lastCommandMs[slot] = atMs
+  slots[key] = atMs
   return false
 end
 
--- the only departure event this platform raises
+-- the departure of an ADMITTED player; a connection refused at the door raises
+-- onPlayerRejected instead, which this resource has no reason to listen for
 AddEventHandler("onPlayerDisconnected", function(playerId)
-  local player = tonumber(playerId) or 0
-  for slot in pairs(lastCommandMs) do
-    if slot:match("^(%d+):") == tostring(player) then lastCommandMs[slot] = nil end
-  end
+  lastCommandMs[math.floor(tonumber(playerId) or 0)] = nil
 end)
 
 --- Register one configured command, or say once why it does not exist.

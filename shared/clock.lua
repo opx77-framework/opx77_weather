@@ -36,16 +36,47 @@ function OpxWeather.guarded(label, fn, ...)
 end
 
 --- Host-monotonic milliseconds; `Open77.time.monotonic` answers SECONDS. A failed or
---- non-finite reading holds the last one: a NaN would expire nothing, an infinity everything.
+--- non-finite reading falls back to `GetGameTimer`, which is the same scheduler clock already
+--- in milliseconds. Holding the last reading instead looks harmless and is not: a frozen
+--- clock stops every deadline in this resource at once, so the heartbeat never fires again,
+--- no roll is ever due, and no command cooldown ever expires -- silently, for the rest of the
+--- process. A NaN would expire nothing and an infinity everything, so both are refused.
 ---@return integer
 local lastMs = 0
+local clockWarned = false
 function OpxWeather.nowMs()
   local read, seconds = pcall(Open77.time.monotonic)
   if read and type(seconds) == "number" and seconds == seconds and
     seconds >= 0 and seconds < math.huge then
     lastMs = math.floor(seconds * 1000)
+    return lastMs
+  end
+  local ticked, ms = pcall(GetGameTimer)
+  if ticked and type(ms) == "number" and ms == ms and ms >= 0 and ms < math.huge then
+    if not clockWarned then
+      clockWarned = true
+      Open77.log.warn("Open77.time.monotonic unreadable; falling back to GetGameTimer")
+    end
+    lastMs = math.floor(ms)
   end
   return lastMs
+end
+
+--- The host wall clock in milliseconds, or nil where there is none.
+---
+--- Unlike `nowMs` this survives a process restart, which is the whole point: it is for
+--- ordering incarnations and seeding, never for measuring an interval. The server sandbox has
+--- no `os`, so before `Open77.time.unix` there was no such reading at all.
+---@return integer|nil
+function OpxWeather.unixMs()
+  local time = Open77.time
+  if type(time) ~= "table" or type(time.unix) ~= "function" then return nil end
+  local read, seconds = pcall(time.unix)
+  if not read or type(seconds) ~= "number" or seconds ~= seconds
+    or seconds <= 0 or seconds >= math.huge then
+    return nil
+  end
+  return math.floor(seconds * 1000)
 end
 
 
