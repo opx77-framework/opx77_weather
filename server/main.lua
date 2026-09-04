@@ -29,9 +29,22 @@ RegisterNetEvent(EVENT_REQUEST, function(requestId)
   Authority.publish("request", player, requestId)
 end)
 
--- the only departure event this platform raises
+--- A player has been admitted. Sending them the sky now costs one event and removes the
+--- pop they would otherwise see: without this they wait either for their own request or for
+--- the next heartbeat. Reading state and sending a payload to a player who has not passed the
+--- readiness gate is safe; only acting on their body is not. No permission is needed.
+AddEventHandler("onPlayerConnected", function(playerId)
+  local player = math.floor(tonumber(playerId) or 0)
+  if player <= 0 then return end
+  Authority.publish("joined", player)
+end)
+
+-- the departure of an ADMITTED player; a connection refused at the door raises
+-- onPlayerRejected instead, which a weather authority has no reason to listen for
 AddEventHandler("onPlayerDisconnected", function(playerId)
-  lastRequestMs[tonumber(playerId) or 0] = nil
+  -- math.floor, not tonumber alone: the key was written from tonumber(source) and Lua 5.4
+  -- keeps 12 and 12.0 apart, so a float id would leave the entry behind forever
+  lastRequestMs[math.floor(tonumber(playerId) or 0)] = nil
 end)
 
 local guarded = OpxWeather.guarded
@@ -40,8 +53,15 @@ local guarded = OpxWeather.guarded
 local nextHeartbeatMs = 0
 
 --- Seeded on the first slice: at file scope the monotonic clock still reads zero.
+---
+--- Monotonic is the wrong source for this. It answers the scheduler clock at millisecond
+--- granularity, so `* 1000000` only ever yields multiples of 1000, and this resource always
+--- loads at about the same point in a process's life -- a narrow band of near-identical
+--- seeds, which replayed roughly the same weather after every restart. The wall clock does
+--- not repeat.
 local function seed()
-  math.randomseed(math.floor(Open77.time.monotonic() * 1000000) % 2147483647)
+  local base = OpxWeather.unixMs() or math.floor(nowMs())
+  math.randomseed(base % 2147483647)
   nextHeartbeatMs = nowMs() + (SYNC.HEARTBEAT_MS or 5000)
 end
 
